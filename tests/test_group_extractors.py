@@ -170,6 +170,7 @@ def test_groups_from_app_lazy_hidden():
         assert "hidden-cmd" not in all_names
 
         # Should not have resolved the hidden command
+        assert isinstance(app._commands["hidden-cmd"], CommandSpec)
         assert not app._commands["hidden-cmd"].is_resolved
     finally:
         del sys.modules["test_lazy_module_hidden"]
