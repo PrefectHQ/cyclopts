@@ -156,10 +156,9 @@ def test_lazy_command_collision(app):
 def test_lazy_command_help(app, console, lazy_module):
     """Test that help generation works with lazy commands.
 
-    Unresolved lazy commands are intentionally excluded from the parent
-    --help output (groups_from_app skips them with resolve_lazy=False).
-    The COMMAND placeholder in the usage line should still appear, and
-    the lazy command should NOT be resolved.
+    When help= is provided at registration, it appears in the parent's
+    --help without resolving the lazy command.  When no help= is provided,
+    the command still appears but with no description.
     """
     test_module = lazy_module()
 
@@ -169,15 +168,17 @@ def test_lazy_command_help(app, console, lazy_module):
 
     test_module.cmd = cmd  # type: ignore[attr-defined]
 
-    app.command("test_lazy_module:cmd", name="lazy-cmd")
+    app.command("test_lazy_module:cmd", name="lazy-cmd", help="Test command documentation.")
 
     # Generate help — should NOT resolve the lazy command
     with console.capture() as capture:
         app(["--help"], console=console)
 
     output = capture.get()
-    # Usage line should indicate commands exist
-    assert "COMMAND" in output
+    # The command name used for registration should appear
+    assert "lazy-cmd" in output
+    # The pre-specified help text should appear (from the stub)
+    assert "Test command documentation" in output
     # The lazy command should NOT have been resolved
     assert not app._commands["lazy-cmd"].is_resolved
 
@@ -218,7 +219,12 @@ def test_lazy_command_not_resolved_until_accessed(app):
 
 
 def test_lazy_command_app_kwargs(app, lazy_module):
-    """Test that app_kwargs are passed when wrapping a function."""
+    """Test that app_kwargs are passed when wrapping a function.
+
+    Note: help= and show= are stored on the CommandSpec for pre-resolution
+    display, not forwarded into app_kwargs.  After resolution the App uses
+    the function's docstring for its own help text.
+    """
     test_module = lazy_module()
 
     def test_func(x: int):
@@ -227,7 +233,7 @@ def test_lazy_command_app_kwargs(app, lazy_module):
 
     test_module.test_func = test_func  # type: ignore[attr-defined]
 
-    # Register with custom app configuration
+    # Register with help= for stub display and a real app_kwarg
     app.command(
         "test_lazy_module:test_func",
         name="custom",
@@ -235,8 +241,15 @@ def test_lazy_command_app_kwargs(app, lazy_module):
         show=True,
     )
 
+    # Before resolution: CommandSpec stores the pre-specified help
+    spec = app._commands["custom"]
+    assert isinstance(spec, CommandSpec)
+    assert spec.help == "Custom help text"
+    assert spec.show is True
+
+    # After resolution: the App gets help from the function's docstring
     resolved = app["custom"]
-    assert resolved.help == "Custom help text"
+    assert resolved.help == "Test function."
 
 
 def test_lazy_command_parse_commands(app, lazy_module):
@@ -317,10 +330,10 @@ def test_lazy_subcommands(app, lazy_module):
 
 
 def test_lazy_command_custom_name_in_help(app, console, lazy_module):
-    """Test that custom name appears in help after the command is resolved.
+    """Test that custom name (not function name) appears in help.
 
-    Unresolved lazy commands are skipped from parent --help output.
-    Once resolved (e.g., via subcommand --help), the custom name is used.
+    With help= provided, the stub shows the custom name and help text
+    without resolving the lazy command.
     """
     test_module = lazy_module()
 
@@ -330,26 +343,23 @@ def test_lazy_command_custom_name_in_help(app, console, lazy_module):
 
     test_module.list_users = list_users  # type: ignore[attr-defined]
 
-    # Register with custom name "list" instead of function name "list_users"
-    app.command("test_lazy_module:list_users", name="list")
+    # Register with custom name "list" and pre-specified help text
+    app.command("test_lazy_module:list_users", name="list", help="List all user accounts.")
 
-    # Before resolution: parent --help should not resolve it
-    assert not app._commands["list"].is_resolved
-
-    # Explicitly resolve to check name is correct
-    resolved = app["list"]
-    assert resolved.name[0] == "list"
-
-    # After resolution it should appear in help
+    # Generate help
     with console.capture() as capture:
         app(["--help"], console=console)
 
     output = capture.get()
+
+    # Should show custom name "list", NOT "list-users" (transformed function name)
     assert "list" in output.lower()
     # Make sure it's not showing the function name
     assert "list-users" not in output
-    # Help text should appear now that it's resolved
+    # Help text should appear from the stub
     assert "List all user accounts" in output
+    # Should NOT have resolved the lazy command
+    assert not app._commands["list"].is_resolved
 
 
 def test_lazy_function_inherits_parent_help_flags(lazy_module):
@@ -508,18 +518,28 @@ def test_lazy_app_doesnt_override_existing_groups(lazy_module):
 
 
 def test_lazy_app_rejects_kwargs(lazy_module):
-    """Test that CommandSpec rejects app_kwargs for App imports."""
+    """Test that CommandSpec rejects app_kwargs for App imports.
+
+    Note: help= and show= are extracted to CommandSpec fields and are
+    NOT forwarded into app_kwargs, so they don't trigger the rejection.
+    Other kwargs (e.g., group_commands) are still rejected for App imports.
+    """
     test_module = lazy_module()
     test_module.subapp = App(name="subapp")  # type: ignore[attr-defined]
 
     parent = App(name="parent")
 
-    # Registration succeeds (creates CommandSpec)
+    # help= alone should NOT trigger rejection (it's stored on CommandSpec)
     parent.command("test_lazy_module:subapp", name="subapp", help="Custom help")
+    resolved = parent["subapp"]
+    assert resolved is test_module.subapp  # should resolve fine
 
-    # Error occurs during resolution (access)
+    # But other kwargs should still trigger rejection
+    test_module.subapp2 = App(name="subapp2")  # type: ignore[attr-defined]
+    parent.command("test_lazy_module:subapp2", name="subapp2", group_commands="Foo")
+
     with pytest.raises(ValueError, match="Cannot apply configuration to imported App"):
-        _ = parent["subapp"]
+        _ = parent["subapp2"]
 
 
 def test_lazy_app_name_must_match(lazy_module):
